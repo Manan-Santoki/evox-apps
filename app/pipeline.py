@@ -5,9 +5,10 @@ One pass:
   2. ask the patcher which app version each package should be patched from
   3. for every app whose (app version, patches version) changed since the
      published index: download the original from APKMirror, check it is signed
-     by the real publisher, patch and sign it with our keystore, upload it
-  4. mirror the latest MicroG-RE release
-  5. write index.json, which the on-device updater reads
+     by the real publisher, patch and sign it with our keystore
+  4. fetch the latest MicroG-RE release
+  5. hold the new builds as pending until they are approved on the dashboard,
+     then upload them and update index.json, which the on-device updater reads
 """
 
 import base64
@@ -19,6 +20,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -38,6 +40,8 @@ S3_BUCKET = os.environ.get("S3_BUCKET", "public")
 S3_PREFIX = os.environ.get("S3_PREFIX", "EvolutionX/apps").strip("/")
 PUBLIC_BASE = os.environ.get("PUBLIC_BASE_URL", "https://s3.msantoki.com/public").rstrip("/")
 KEEP_BUILDS = int(os.environ.get("KEEP_BUILDS", "2"))
+AUTO_APPROVE = os.environ.get("AUTO_APPROVE", "false").lower() == "true"
+DASHBOARD_URL = os.environ.get("DASHBOARD_URL", "")
 
 UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/130.0 Safari/537.36")
@@ -293,14 +297,57 @@ def original_signers(path):
         base.unlink()
 
 
+# --------------------------------------------------------------------------- state
+
+class State:
+    """Pending builds, rejections and run history, kept in /data/state.json.
+
+    Published builds live in the public index.json on S3. A new build waits in
+    `pending` (its APK stays on the local volume, not public) until it is
+    approved from the dashboard, unless AUTO_APPROVE is on.
+    """
+
+    def __init__(self, path=None):
+        self.path = path or WORK / "state.json"
+        self.lock = threading.RLock()
+        self.data = {"pending": {}, "rejected": [], "history": [], "lastRun": None}
+        if self.path.exists():
+            self.data.update(json.loads(self.path.read_text()))
+
+    def save(self):
+        with self.lock:
+            tmp = self.path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(self.data, indent=2))
+            tmp.replace(self.path)
+
+    def event(self, action, app_id, build, detail="", name=None):
+        with self.lock:
+            self.data["history"].insert(0, {"time": now_iso(), "action": action, "id": app_id,
+                                            "name": name or app_name(app_id), "build": build,
+                                            "detail": detail})
+            del self.data["history"][100:]
+            self.save()
+
+
+def app_name(app_id):
+    for a in [*CONFIG["apps"], CONFIG["microg"]]:
+        if a["id"] == app_id:
+            return a["name"]
+    return app_id
+
+
+def release_links(app, version, patches_tag):
+    return {
+        "patchesNotes": f"https://github.com/{CONFIG['patches_repo']}/releases/tag/{patches_tag}",
+        "appPage": f"{APKMIRROR}/apk/{app['apkmirror']}/",
+    }
+
+
 # --------------------------------------------------------------------------- build
 
-def build_app(http, store, tools, app, version, patches_tag, index_entry):
+def build_app(http, tools, app, version, patches_tag):
+    """Patch one app into WORK/pending. Returns its pending entry."""
     build = f"{version}+{patches_tag}"
-    if index_entry and index_entry.get("build") == build:
-        log.info("%s: %s already published", app["id"], build)
-        return index_entry
-
     log.info("%s: building %s", app["id"], build)
     cache = WORK / "originals"
     cache.mkdir(parents=True, exist_ok=True)
@@ -321,72 +368,116 @@ def build_app(http, store, tools, app, version, patches_tag, index_entry):
         log.warning("%s: no pinned signer, original is signed by %s (pin it in config.yaml)",
                     app["id"], signers)
 
-    out_dir = WORK / "out"
-    out_dir.mkdir(exist_ok=True)
+    out_dir = WORK / "pending" / app["id"]
+    out_dir.mkdir(parents=True, exist_ok=True)
     patched = out_dir / f"{app['id']}-{version}-{patches_tag}.apk"
-    result = out_dir / f"{app['id']}-{version}-{patches_tag}.json"
+    result = out_dir / "result.json"
     tools.patch(original, patched, result, app.get("patches"))
     res = json.loads(result.read_text())
+    result.unlink()
     failed = [s for s in res.get("patchingSteps", []) if not s.get("success")]
     if failed:
         raise RuntimeError(f"{app['id']}: patching failed: {failed}")
 
-    entry = publish(store, app["id"], patched, {
+    for old in cache.glob(f"{app['id']}-*"):
+        if old != original:
+            old.unlink()
+    return describe(patched, {
         "id": app["id"],
         "name": app["name"],
         "originalPackage": app["package"],
         "versionName": version,
         "patches": patches_tag,
         "build": build,
-        "appliedPatches": len(res.get("appliedPatches", [])),
+        "appliedPatches": sorted(p["name"] for p in res.get("appliedPatches", [])),
         "originalSigners": signers,
+        "links": release_links(app, version, patches_tag),
     })
-    prune(store, app["id"], index_entry, entry)
-    for f in (patched, result):
-        f.unlink(missing_ok=True)
-    for old in cache.glob(f"{app['id']}-*"):
-        if old != original:
-            old.unlink()
-    return entry
 
 
-def build_microg(http, store, index_entry):
+def build_microg(http):
     cfg = CONFIG["microg"]
     rel = github_latest(cfg["repo"])
     version = rel["tag_name"]
-    if index_entry and index_entry.get("build") == version:
-        log.info("microg: %s already published", version)
-        return index_entry
-    cache = WORK / "originals"
-    cache.mkdir(parents=True, exist_ok=True)
-    _, apk = fetch_release_asset(http, cfg["repo"], re.escape(cfg["asset"].format(version=version)), cache)
-    entry = publish(store, cfg["id"], apk, {
+    out_dir = WORK / "pending" / cfg["id"]
+    out_dir.mkdir(parents=True, exist_ok=True)
+    _, apk = fetch_release_asset(http, cfg["repo"], re.escape(cfg["asset"].format(version=version)), out_dir)
+    return describe(apk, {
         "id": cfg["id"],
         "name": cfg["name"],
         "versionName": version,
         "build": version,
+        "links": {"releaseNotes": rel["html_url"]},
     })
-    prune(store, cfg["id"], index_entry, entry)
-    apk.unlink()
-    return entry
 
 
-def publish(store, app_id, apk, meta):
+def describe(apk, meta):
     pkg, code = package_of(apk)
-    key = store.key(app_id, apk.name)
-    log.info("%s: uploading %s", app_id, key)
-    store.put_file(key, apk)
     return {
         **meta,
         "package": pkg,
         "versionCode": code,
-        "url": store.url(key),
-        "key": key,
+        "file": str(apk),
         "size": apk.stat().st_size,
         "sha256": sha256_file(apk),
         "signer": signer_digests(apk),
-        "published": now_iso(),
+        "built": now_iso(),
     }
+
+
+def package_of(apk):
+    """(package name, versionCode) read from the APK manifest."""
+    a = APK(str(apk))
+    return a.package, int(a.version_code)
+
+
+# --------------------------------------------------------------------------- publish
+
+def app_order():
+    return [a["id"] for a in CONFIG["apps"]] + [CONFIG["microg"]["id"]]
+
+
+def approve(state, store, app_id, by="dashboard"):
+    """Upload a pending build and put it in the public index."""
+    with state.lock:
+        entry = state.data["pending"].get(app_id)
+        if not entry:
+            raise KeyError(f"no pending build for {app_id}")
+        apk = Path(entry["file"])
+        index_key = store.key("index.json")
+        index = store.get_json(index_key) or {"schema": 1, "apps": []}
+        current = {a["id"]: a for a in index.get("apps", [])}
+
+        key = store.key(app_id, apk.name)
+        log.info("%s: publishing %s", app_id, key)
+        store.put_file(key, apk)
+        published = {k: v for k, v in entry.items() if k not in ("file", "built")}
+        published.update({"url": store.url(key), "key": key, "published": now_iso()})
+        prune(store, app_id, current.get(app_id), published)
+
+        current[app_id] = published
+        index["apps"] = [current[i] for i in app_order() if i in current]
+        index["generated"] = now_iso()
+        if entry.get("patches"):
+            index["patches"] = entry["patches"]
+        store.put_json(index_key, index)
+
+        apk.unlink(missing_ok=True)
+        del state.data["pending"][app_id]
+        state.event("approved", app_id, entry["build"], by)
+        write_status(state, store)
+        return published
+
+
+def reject(state, app_id, by="dashboard"):
+    """Drop a pending build. The same build is not made again."""
+    with state.lock:
+        entry = state.data["pending"].pop(app_id, None)
+        if not entry:
+            raise KeyError(f"no pending build for {app_id}")
+        Path(entry["file"]).unlink(missing_ok=True)
+        state.data["rejected"].append(f"{app_id}:{entry['build']}")
+        state.event("rejected", app_id, entry["build"], by)
 
 
 def prune(store, app_id, old_entry, new_entry):
@@ -402,13 +493,28 @@ def prune(store, app_id, old_entry, new_entry):
             store.delete(k)
 
 
-def package_of(apk):
-    """(package name, versionCode) read from the APK manifest."""
-    a = APK(str(apk))
-    return a.package, int(a.version_code)
+def write_status(state, store):
+    run = state.data.get("lastRun") or {}
+    store.put_json(store.key("status.json"), {
+        "checked": run.get("finished"),
+        "errors": run.get("errors", []),
+        "pending": {k: v["build"] for k, v in state.data["pending"].items()},
+    })
 
 
-# --------------------------------------------------------------------------- main
+def notify(text):
+    """Telegram message, when TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are set."""
+    token, chat = os.environ.get("TELEGRAM_BOT_TOKEN"), os.environ.get("TELEGRAM_CHAT_ID")
+    if not (token and chat):
+        return
+    try:
+        requests.post(f"https://api.telegram.org/bot{token}/sendMessage", timeout=30,
+                      json={"chat_id": chat, "text": text, "disable_web_page_preview": True})
+    except Exception:
+        log.exception("telegram notification failed")
+
+
+# --------------------------------------------------------------------------- run
 
 def keystore_path():
     path = WORK / "signing.p12"
@@ -417,79 +523,100 @@ def keystore_path():
     return path
 
 
-def run_once():
+def run_once(state, store=None):
+    """Check for new versions and build them into pending."""
     WORK.mkdir(parents=True, exist_ok=True)
     tools_dir = WORK / "tools"
     tools_dir.mkdir(exist_ok=True)
     http = Http()
-    store = Store()
+    store = store or Store()
+    run = {"started": now_iso(), "finished": None, "errors": [], "built": []}
+    with state.lock:
+        state.data["lastRun"] = run
+        state.save()
 
-    patcher_tag, jar = fetch_release_asset(http, CONFIG["patcher_repo"], r".*-all\.jar", tools_dir)
-    patches_tag, mpp = fetch_release_asset(http, CONFIG["patches_repo"], r".*\.mpp", tools_dir)
-    for f in [*tools_dir.glob("*.jar"), *tools_dir.glob("*.mpp")]:
-        if f not in (jar, mpp):
-            f.unlink()
-    log.info("patcher %s, patches %s", patcher_tag, patches_tag)
-
-    tools = Tools(jar, mpp, keystore_path())
-    versions = tools.recommended_versions()
-    log.info("recommended versions: %s", versions)
-
-    index_key = store.key("index.json")
-    index = store.get_json(index_key) or {"apps": []}
-    current = {a["id"]: a for a in index.get("apps", [])}
-
-    apps, errors = [], []
-    for app in CONFIG["apps"]:
-        try:
-            version = versions.get(app["package"])
-            if not version:
-                raise RuntimeError(f"patches {patches_tag} support no version of {app['package']}")
-            apps.append(build_app(http, store, tools, app, version, patches_tag, current.get(app["id"])))
-        except Exception as e:  # keep publishing the other apps
-            log.exception("%s failed", app["id"])
-            errors.append(f"{app['id']}: {e}")
-            if app["id"] in current:
-                apps.append(current[app["id"]])
     try:
-        apps.append(build_microg(http, store, current.get(CONFIG["microg"]["id"])))
-    except Exception as e:
-        log.exception("microg failed")
-        errors.append(f"microg: {e}")
-        if CONFIG["microg"]["id"] in current:
-            apps.append(current[CONFIG["microg"]["id"]])
+        patcher_tag, jar = fetch_release_asset(http, CONFIG["patcher_repo"], r".*-all\.jar", tools_dir)
+        patches_tag, mpp = fetch_release_asset(http, CONFIG["patches_repo"], r".*\.mpp", tools_dir)
+        for f in [*tools_dir.glob("*.jar"), *tools_dir.glob("*.mpp")]:
+            if f not in (jar, mpp):
+                f.unlink()
+        run.update({"patcher": patcher_tag, "patches": patches_tag})
+        log.info("patcher %s, patches %s", patcher_tag, patches_tag)
 
-    new_index = {
-        "schema": 1,
-        "generated": now_iso(),
-        "patcher": patcher_tag,
-        "patches": patches_tag,
-        "apps": apps,
-    }
-    if [a.get("build") for a in apps] != [a.get("build") for a in index.get("apps", [])]:
-        store.put_json(index_key, new_index)
-        log.info("index.json updated")
-    else:
-        log.info("nothing changed")
-    store.put_json(store.key("status.json"), {"checked": now_iso(), "errors": errors})
-    return not errors
+        tools = Tools(jar, mpp, keystore_path())
+        versions = tools.recommended_versions()
+        run["supported"] = versions
+        log.info("recommended versions: %s", versions)
+
+        index = store.get_json(store.key("index.json")) or {"apps": []}
+        published = {a["id"]: a.get("build") for a in index.get("apps", [])}
+
+        def wanted(app_id, build):
+            if published.get(app_id) == build:
+                log.info("%s: %s already published", app_id, build)
+                return False
+            pend = state.data["pending"].get(app_id)
+            if pend and pend["build"] == build:
+                log.info("%s: %s already waiting for approval", app_id, build)
+                return False
+            if f"{app_id}:{build}" in state.data["rejected"]:
+                log.info("%s: %s was rejected, skipping", app_id, build)
+                return False
+            return True
+
+        def add_pending(entry):
+            with state.lock:
+                old = state.data["pending"].get(entry["id"])
+                if old and old["file"] != entry["file"]:
+                    Path(old["file"]).unlink(missing_ok=True)
+                state.data["pending"][entry["id"]] = entry
+                state.save()
+            state.event("built", entry["id"], entry["build"])
+            run["built"].append(f"{entry['name']} {entry['versionName']}")
+
+        for app in CONFIG["apps"]:
+            try:
+                version = versions.get(app["package"])
+                if not version:
+                    raise RuntimeError(f"patches {patches_tag} support no version of {app['package']}")
+                if wanted(app["id"], f"{version}+{patches_tag}"):
+                    add_pending(build_app(http, tools, app, version, patches_tag))
+            except Exception as e:  # keep going with the other apps
+                log.exception("%s failed", app["id"])
+                run["errors"].append(f"{app['id']}: {e}")
+
+        try:
+            cfg = CONFIG["microg"]
+            if wanted(cfg["id"], github_latest(cfg["repo"])["tag_name"]):
+                add_pending(build_microg(http))
+        except Exception as e:
+            log.exception("microg failed")
+            run["errors"].append(f"microg: {e}")
+    except Exception as e:
+        log.exception("run failed")
+        run["errors"].append(str(e))
+
+    run["finished"] = now_iso()
+    with state.lock:
+        state.save()
+
+    if AUTO_APPROVE:
+        for app_id in list(state.data["pending"]):
+            approve(state, store, app_id, by="auto")
+    elif run["built"]:
+        notify("New EvoX app builds waiting for approval: " + ", ".join(run["built"])
+               + (f"\n{DASHBOARD_URL}" if DASHBOARD_URL else ""))
+    write_status(state, store)
+    log.info("check finished: %d built, %d errors", len(run["built"]), len(run["errors"]))
+    return not run["errors"]
 
 
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
                         stream=sys.stdout)
-    interval = int(os.environ.get("CHECK_INTERVAL_HOURS", "6")) * 3600
-    once = "--once" in sys.argv
-    while True:
-        try:
-            ok = run_once()
-        except Exception:
-            log.exception("run failed")
-            ok = False
-        if once:
-            sys.exit(0 if ok else 1)
-        log.info("next check in %sh", interval // 3600)
-        time.sleep(interval)
+    ok = run_once(State())
+    sys.exit(0 if ok else 1)
 
 
 if __name__ == "__main__":

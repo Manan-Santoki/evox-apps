@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>EvoX App Builds</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: header with run status, then "Waiting for approval" cards, the published table, activity and logs */
+:root{
+  --bg:#f3f4f6; --panel:#ffffff; --fg:#161a22; --muted:#5b6474; --line:#dde1e8; --soft:#eceff4;
+  --accent:#d6402b; --accent-soft:#fbe7e3; --ok:#1e7a55; --ok-soft:#dff3ea; --warn:#a15c00; --warn-soft:#fdf1dc; --bad:#b4232c;
+  --display:"Bricolage Grotesque",ui-sans-serif,system-ui,sans-serif;
+  --body:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme: dark){:root{
+  --bg:#0f1218; --panel:#171b23; --fg:#e7eaf0; --muted:#97a0b0; --line:#2a303c; --soft:#1f2430;
+  --accent:#ff6a52; --accent-soft:#3a1d18; --ok:#4cc592; --ok-soft:#12291f; --warn:#f0b35a; --warn-soft:#33270f; --bad:#ff7b84; color-scheme:dark}}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+html,body{margin:0}
+body{background:var(--bg);color:var(--fg);font:15px/1.5 var(--body)}
+.wrap{max-width:1040px;margin:0 auto;padding-block:max(24px,env(safe-area-inset-top)) 48px;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));
+  display:flex;flex-direction:column;gap:22px}
+header{display:flex;flex-wrap:wrap;gap:12px 20px;align-items:flex-end;justify-content:space-between}
+h1{font:700 30px/1.1 var(--display);margin:0}
+.sub{color:var(--muted);margin:4px 0 0;max-width:62ch}
+.actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+button,.btn{font:600 14px var(--body);border-radius:8px;padding:8px 14px;border:1px solid var(--line);background:var(--panel);color:var(--fg);cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;gap:6px}
+button.primary{background:var(--ok);border-color:var(--ok);color:#fff}
+button.danger{color:var(--bad)}
+button:disabled{opacity:.5;cursor:default}
+button:focus-visible,.btn:focus-visible,a:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.status{display:flex;flex-wrap:wrap;gap:8px 16px;font:500 13px var(--mono);color:var(--muted)}
+.chip{display:inline-flex;gap:6px;align-items:center;padding:2px 10px;border-radius:999px;background:var(--soft);font:500 12px var(--mono);color:var(--muted)}
+.chip.run{background:var(--warn-soft);color:var(--warn)}
+.chip.ok{background:var(--ok-soft);color:var(--ok)}
+.chip.err{background:var(--accent-soft);color:var(--accent)}
+.dot{width:8px;height:8px;border-radius:50%;background:currentColor}
+.run .dot{animation:pulse 1.2s infinite}
+@keyframes pulse{50%{opacity:.3}}
+h2{font:600 13px var(--mono);text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:0 0 10px}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:10px;min-width:0}
+.card.pending{border-color:var(--warn);box-shadow:inset 0 3px 0 var(--warn)}
+.card h3{font:700 19px var(--display);margin:0}
+.ver{font:500 14px var(--mono);display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.ver .old{color:var(--muted);text-decoration:line-through}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:2px 12px;font-size:13px}
+.kv dt{color:var(--muted)}
+.kv dd{margin:0;font-family:var(--mono);overflow-wrap:anywhere;min-width:0}
+.card .actions{margin-top:auto}
+details summary{cursor:pointer;color:var(--muted);font-size:13px}
+details ul{margin:6px 0 0;padding-left:18px;font-size:13px;columns:2;column-gap:20px}
+.empty{background:var(--panel);border:1px dashed var(--line);border-radius:12px;padding:18px;color:var(--muted)}
+.tbl{overflow-x:auto;background:var(--panel);border:1px solid var(--line);border-radius:12px}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:10px 14px;border-bottom:1px solid var(--soft);white-space:nowrap}
+th{font:500 12px var(--mono);color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+tr:last-child td{border-bottom:0}
+td.mono{font-family:var(--mono);font-size:13px}
+a{color:var(--accent)}
+.hist{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:6px 0;margin:0;list-style:none}
+.hist li{display:grid;grid-template-columns:190px 90px 1fr;gap:10px;padding:6px 14px;font-size:14px}
+.hist .t{font:13px var(--mono);color:var(--muted)}
+.hist .a{font:500 12px var(--mono);text-transform:uppercase}
+.a.approved{color:var(--ok)} .a.rejected{color:var(--bad)} .a.built{color:var(--warn)}
+pre.logs{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 14px;font:12px/1.5 var(--mono);max-height:420px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;margin:0}
+.errors{background:var(--accent-soft);border-radius:10px;padding:10px 14px;font-size:14px}
+.errors li{font-family:var(--mono);font-size:13px}
+footer{color:var(--muted);font-size:13px;display:flex;flex-direction:column;gap:4px}
+footer code{font-family:var(--mono);overflow-wrap:anywhere}
+.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(20px + env(safe-area-inset-bottom,0px));background:var(--fg);color:var(--bg);padding:10px 16px;border-radius:10px;font-size:14px;max-width:calc(100% - 32px)}
+@media (max-width:560px){.hist li{grid-template-columns:1fr;gap:0}details ul{columns:1}}
+@media (prefers-reduced-motion:reduce){.run .dot{animation:none}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>EvoX app builds</h1>
+      <p class="sub">Morphe-patched YouTube, YT Music and Reddit for Evolution X on the Xiaomi Pad 6. New builds wait here until they're approved, then devices pick them up.</p>
+    </div>
+    <div class="actions">
+      <button type="button" id="check" hidden>Check now</button>
+      <a class="btn" id="signin" href="/login" hidden>Sign in</a>
+    </div>
+  </header>
+  <div class="status" id="status">Loading…</div>
+  <div id="errors"></div>
+
+  <section>
+    <h2>Waiting for approval</h2>
+    <div id="pending" class="cards"></div>
+  </section>
+
+  <section>
+    <h2>Published</h2>
+    <div class="tbl"><table>
+      <thead><tr><th>App</th><th>Version</th><th>Patches</th><th>Published</th><th>Size</th><th>Download</th></tr></thead>
+      <tbody id="published"><tr><td colspan="6">Loading…</td></tr></tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <h2>Activity</h2>
+    <ul class="hist" id="history"></ul>
+  </section>
+
+  <section id="logsec" hidden>
+    <h2>Logs</h2>
+    <pre class="logs" id="logs"></pre>
+  </section>
+
+  <footer>
+    <span>Index for the on-device updater: <a id="indexurl" href="#">index.json</a> · Source: <a href="https://github.com/Manan-Santoki/evox-apps">github.com/Manan-Santoki/evox-apps</a></span>
+    <span>Release signing certificate SHA-256: <code>b535ab8d88644e90add44cb43725cbd9807471d71c730d7f38b8ebb2f2eb0276</code></span>
+  </footer>
+</div>
+<div class="toast" id="toast" hidden></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const mb = n => n ? (n / 1048576).toFixed(0) + " MB" : "";
+const ago = iso => {
+  if (!iso) return "never";
+  const s = (Date.now() - new Date(iso)) / 1000;
+  if (s < 60) return "just now";
+  if (s < 3600) return Math.round(s / 60) + " min ago";
+  if (s < 86400) return Math.round(s / 3600) + " h ago";
+  return Math.round(s / 86400) + " d ago";
+};
+const until = ts => { const m = Math.max(0, Math.round((ts * 1000 - Date.now()) / 60000)); return m < 60 ? m + " min" : (m / 60).toFixed(1) + " h"; };
+const fmtDate = iso => iso ? new Date(iso).toLocaleString([], {dateStyle: "medium", timeStyle: "short"}) : "";
+let S = null, busy = false;
+
+function toast(msg) { const t = $("toast"); t.textContent = msg; t.hidden = false; clearTimeout(toast.t); toast.t = setTimeout(() => t.hidden = true, 4000); }
+
+async function post(path) {
+  const r = await fetch(path, {method: "POST", headers: {"X-Requested-With": "evox"}});
+  if (r.status === 401) { location.href = "/login"; return null; }
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(body.detail || r.statusText);
+  return body;
+}
+
+function patchCount(e) { return Array.isArray(e.appliedPatches) ? e.appliedPatches.length : e.appliedPatches; }
+
+function render() {
+  const pub = Object.fromEntries(S.published.map(a => [a.id, a]));
+  const run = S.lastRun || {};
+  const chips = [];
+  if (S.running) chips.push(`<span class="chip run"><span class="dot"></span>Checking for updates…</span>`);
+  else if (run.finished) chips.push(`<span class="chip ${run.errors && run.errors.length ? "err" : "ok"}"><span class="dot"></span>Checked ${ago(run.finished)}</span>`);
+  if (!S.running && S.nextCheck) chips.push(`<span>Next check in ${until(S.nextCheck)}</span>`);
+  chips.push(`<span>Every ${S.intervalHours} h</span>`);
+  if (run.patches) chips.push(`<span>Morphe patches ${esc(run.patches)}</span>`);
+  chips.push(`<span>${S.autoApprove ? "Auto-approve on" : "Manual approval"}</span>`);
+  if (S.admin) chips.push(`<span>Signed in</span>`);
+  $("status").innerHTML = chips.join("");
+  $("errors").innerHTML = run.errors && run.errors.length ? `<div class="errors"><b>Last check had problems:</b><ul>${run.errors.map(e => `<li>${esc(e)}</li>`).join("")}</ul></div>` : "";
+
+  $("check").hidden = !S.admin; $("check").disabled = S.running;
+  $("signin").hidden = S.admin || !S.adminEnabled;
+  $("indexurl").href = S.indexUrl;
+
+  const pend = S.order.filter(id => S.pending[id]).map(id => S.pending[id]);
+  $("pending").innerHTML = pend.length ? pend.map(e => {
+    const old = pub[e.id];
+    const n = patchCount(e);
+    const links = e.links || {};
+    return `<article class="card pending">
+      <h3>${esc(e.name)}</h3>
+      <div class="ver">${old ? `<span class="old">${esc(old.versionName)}${old.patches ? " · " + esc(old.patches) : ""}</span><span>→</span>` : `<span class="chip">new</span>`}<b>${esc(e.versionName)}${e.patches ? " · " + esc(e.patches) : ""}</b></div>
+      <dl class="kv">
+        <dt>Package</dt><dd>${esc(e.package)}</dd>
+        <dt>Version code</dt><dd>${esc(e.versionCode)}</dd>
+        ${n !== undefined ? `<dt>Patches</dt><dd>${n} applied</dd>` : ""}
+        <dt>Size</dt><dd>${mb(e.size)}</dd>
+        <dt>Built</dt><dd>${fmtDate(e.built)}</dd>
+        <dt>SHA-256</dt><dd>${esc(e.sha256)}</dd>
+      </dl>
+      ${Array.isArray(e.appliedPatches) ? `<details><summary>Applied patches</summary><ul>${e.appliedPatches.map(p => `<li>${esc(p)}</li>`).join("")}</ul></details>` : ""}
+      <div class="actions" style="font-size:13px">
+        ${links.patchesNotes ? `<a href="${esc(links.patchesNotes)}" target="_blank" rel="noopener">Patch notes</a>` : ""}
+        ${links.releaseNotes ? `<a href="${esc(links.releaseNotes)}" target="_blank" rel="noopener">Release notes</a>` : ""}
+        ${links.appPage ? `<a href="${esc(links.appPage)}" target="_blank" rel="noopener">App on APKMirror</a>` : ""}
+      </div>
+      ${S.admin ? `<div class="actions">
+        <button type="button" class="primary" data-approve="${esc(e.id)}">Approve and publish</button>
+        <button type="button" class="danger" data-reject="${esc(e.id)}">Reject</button>
+        <a class="btn" href="/api/pending/${encodeURIComponent(e.id)}/apk">Download to test</a>
+      </div>` : `<div class="sub" style="font-size:13px">Waiting for the maintainer to approve.</div>`}
+    </article>`;
+  }).join("") : `<div class="empty">Nothing waiting. Every app is on the newest build Morphe supports.</div>`;
+
+  const rows = S.order.filter(id => pub[id]).map(id => pub[id]);
+  $("published").innerHTML = rows.length ? rows.map(a => `<tr>
+      <td><b>${esc(a.name)}</b><br><span class="mono" style="font-size:12px;color:var(--muted)">${esc(a.package)}</span></td>
+      <td class="mono">${esc(a.versionName)}</td>
+      <td class="mono">${esc(a.patches || "–")}</td>
+      <td>${fmtDate(a.published)}</td>
+      <td class="mono">${mb(a.size)}</td>
+      <td><a href="${esc(a.url)}">APK</a></td></tr>`).join("") : `<tr><td colspan="6">Nothing published yet.</td></tr>`;
+
+  $("history").innerHTML = S.history.length ? S.history.map(h => `<li><span class="t">${fmtDate(h.time)}</span><span class="a ${esc(h.action)}">${esc(h.action)}</span><span>${esc(h.name || (S.published.find(a => a.id === h.id) || S.pending[h.id] || {name: h.id}).name)} ${esc(h.build)}${h.detail && h.detail !== "dashboard" ? " · " + esc(h.detail) : ""}</span></li>`).join("") : `<li><span class="t">No activity yet</span></li>`;
+}
+
+async function load() {
+  try {
+    const r = await fetch("/api/state", {cache: "no-store"});
+    S = await r.json(); render();
+    if (S.admin) {
+      $("logsec").hidden = false;
+      const l = await fetch("/api/logs", {cache: "no-store"}).then(r => r.json());
+      const pre = $("logs"), atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20;
+      pre.textContent = l.lines.join("\n") || "No log lines yet.";
+      if (atEnd) pre.scrollTop = pre.scrollHeight;
+    }
+  } catch (e) { $("status").textContent = "Couldn't reach the server. Retrying…"; }
+}
+
+document.addEventListener("click", async e => {
+  const b = e.target.closest("button"); if (!b || busy) return;
+  const id = b.dataset.approve || b.dataset.reject;
+  try {
+    if (b.id === "check") { busy = true; const r = await post("/api/check"); toast(r && r.started ? "Check started" : (r && r.message) || "Already running"); }
+    else if (b.dataset.approve) {
+      if (b.dataset.sure !== "1") { b.dataset.sure = "1"; b.textContent = "Click again to publish"; setTimeout(() => { b.dataset.sure = ""; b.textContent = "Approve and publish"; }, 4000); return; }
+      busy = true; b.disabled = true; b.textContent = "Publishing…";
+      await post("/api/approve/" + encodeURIComponent(id)); toast("Published. Devices get it on their next update check.");
+    } else if (b.dataset.reject) {
+      if (b.dataset.sure !== "1") { b.dataset.sure = "1"; b.textContent = "Click again to reject"; setTimeout(() => { b.dataset.sure = ""; b.textContent = "Reject"; }, 4000); return; }
+      busy = true; await post("/api/reject/" + encodeURIComponent(id)); toast("Rejected. This build won't be made again.");
+    }
+  } catch (err) { toast("Failed: " + err.message); }
+  busy = false; load();
+});
+
+load(); setInterval(load, 10000);
+</script>
+</body>
+</html>

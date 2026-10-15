@@ -1,5 +1,7 @@
 beautifulsoup4==4.12.3
 boto3==1.35.36
+fastapi==0.115.0
 pyaxmlparser==0.3.31
 PyYAML==6.0.2
 requests==2.32.3
+uvicorn==0.30.6
