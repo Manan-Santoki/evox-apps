@@ -6,7 +6,7 @@ One pass:
   3. for every app whose (app version, patches version) changed since the
      published index: download the original from APKMirror, check it is signed
      by the real publisher, patch and sign it with our keystore
-  4. fetch the latest MicroG-RE release
+  4. fetch the latest MicroG-RE and KernelSU manager releases
   5. hold the new builds as pending until they are approved on the dashboard,
      then upload them and update index.json, which the on-device updater reads
 """
@@ -330,7 +330,7 @@ class State:
 
 
 def app_name(app_id):
-    for a in [*CONFIG["apps"], CONFIG["microg"]]:
+    for a in [*CONFIG["apps"], *CONFIG["mirrors"]]:
         if a["id"] == app_id:
             return a["name"]
     return app_id
@@ -395,13 +395,17 @@ def build_app(http, tools, app, version, patches_tag):
     })
 
 
-def build_microg(http):
-    cfg = CONFIG["microg"]
+def build_mirror(http, cfg):
+    """Fetch an unpatched app from its latest GitHub release and check its signer."""
     rel = github_latest(cfg["repo"])
     version = rel["tag_name"]
     out_dir = WORK / "pending" / cfg["id"]
     out_dir.mkdir(parents=True, exist_ok=True)
-    _, apk = fetch_release_asset(http, cfg["repo"], re.escape(cfg["asset"].format(version=version)), out_dir)
+    _, apk = fetch_release_asset(http, cfg["repo"], cfg["asset"].replace("{version}", re.escape(version)), out_dir)
+    signers = signer_digests(apk)
+    if cfg.get("signers") and not set(signers) & set(cfg["signers"]):
+        apk.unlink()
+        raise RuntimeError(f"{cfg['id']}: signed by {signers}, expected {cfg['signers']}")
     return describe(apk, {
         "id": cfg["id"],
         "name": cfg["name"],
@@ -434,7 +438,7 @@ def package_of(apk):
 # --------------------------------------------------------------------------- publish
 
 def app_order():
-    return [a["id"] for a in CONFIG["apps"]] + [CONFIG["microg"]["id"]]
+    return [a["id"] for a in CONFIG["apps"]] + [m["id"] for m in CONFIG["mirrors"]]
 
 
 def approve(state, store, app_id, by="dashboard"):
@@ -586,13 +590,13 @@ def run_once(state, store=None):
                 log.exception("%s failed", app["id"])
                 run["errors"].append(f"{app['id']}: {e}")
 
-        try:
-            cfg = CONFIG["microg"]
-            if wanted(cfg["id"], github_latest(cfg["repo"])["tag_name"]):
-                add_pending(build_microg(http))
-        except Exception as e:
-            log.exception("microg failed")
-            run["errors"].append(f"microg: {e}")
+        for cfg in CONFIG["mirrors"]:
+            try:
+                if wanted(cfg["id"], github_latest(cfg["repo"])["tag_name"]):
+                    add_pending(build_mirror(http, cfg))
+            except Exception as e:
+                log.exception("%s failed", cfg["id"])
+                run["errors"].append(f"{cfg['id']}: {e}")
     except Exception as e:
         log.exception("run failed")
         run["errors"].append(str(e))
