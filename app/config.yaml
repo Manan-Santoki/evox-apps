@@ -54,11 +54,12 @@ mirrors:
     signers:
       - 0b6c9515afb195fac59601696ba0a7907a0b217ccf720b43148427ccf64343e7
 
-  # Manager for the KernelSU (RKSU) built into the kernel. Its package name is
-  # random per release; the kernel recognizes it by this signing key.
+  # Manager for the KernelSU-Next built into the kernel (legacy branch). The
+  # kernel recognizes it by this signing key. The "spoofed" builds use a random
+  # package name and are skipped.
   - id: kernelsu
-    name: KernelSU
-    repo: rsuntk/KernelSU
-    asset: 'KernelSU_.*-release\.apk'
+    name: KernelSU Next
+    repo: KernelSU-Next/KernelSU-Next
+    asset: 'KernelSU_Next_v[0-9.]+_[0-9]+-release\.apk'
     signers:
-      - f415f4ed9435427e1fdf7f1fccd4dbc07b3d6b8751e4dbcec6f19671f427870b
+      - 79e590113c4c4c0c222978e413a5faa801666957b1212a328e46c00c69821bf7

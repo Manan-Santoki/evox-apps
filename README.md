@@ -3,7 +3,7 @@
 Build pipeline for the patched apps that ship with my unofficial Evolution X
 builds (Xiaomi Pad 6, `pipa`). It produces YouTube, YouTube Music and Reddit
 patched with [Morphe](https://github.com/MorpheApp), plus MicroG-RE and the
-KernelSU manager, and
+KernelSU-Next manager, and
 publishes them for the ROM's built-in app updater.
 
 The apps keep their stock look (original icon and name) and get every Morphe
@@ -23,7 +23,7 @@ Every few hours the pipeline:
    - patches it and signs it with the release key.
 4. Mirrors the latest stable [MicroG-RE](https://github.com/MorpheApp/MicroG-RE),
    which the Google apps need for sign-in, and the
-   [KernelSU (RKSU)](https://github.com/rsuntk/KernelSU) manager for the root
+   [KernelSU-Next](https://github.com/KernelSU-Next/KernelSU-Next) manager for the root
    built into the kernel, each checked against its pinned signing key.
 5. Holds the new builds as **pending**. Nothing reaches devices until a build
    is approved on the dashboard. Approving uploads it and rewrites
